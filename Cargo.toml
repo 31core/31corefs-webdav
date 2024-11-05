@@ -8,10 +8,10 @@ name = "31corefs-webdav"
 path = "src/main.rs"
 
 [dependencies]
-actix-web = "4.4.1"
-dav-server = { version = "0.5.7", features = ["actix-compat"] }
-tokio = { version = "1.35.1", features = ["full"] }
+actix-web = "4.9.0"
+dav-server = { version = "0.7.0", features = ["actix-compat"] }
+tokio = { version = "1.41.0", features = ["full"] }
 lib31corefs = { path = "../../lib31corefs" }
-bytes = "1.5.0"
-futures-util = "0.3.30"
-clap = { version = "4.5.1", features = ["derive"] }
+bytes = "1.8.0"
+futures-util = "0.3.31"
+clap = { version = "4.5.20", features = ["derive"] }
