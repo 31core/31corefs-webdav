@@ -11,20 +11,8 @@ use dav_server::davpath::*;
 use dav_server::fs::*;
 use dav_server::*;
 use futures_util::FutureExt;
-use lib31corefs::dir::Directory;
-use lib31corefs::file::File;
-use lib31corefs::subvol::Subvolume;
-use lib31corefs::Filesystem;
+use lib31corefs::{Directory, File, Filesystem, Subvolume};
 use tokio::sync::Mutex;
-
-macro_rules! open_device {
-    ($device: expr) => {
-        std::fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open($device)?
-    };
-}
 
 #[derive(Parser)]
 #[command(about = "31coreFS webdav interface", version)]
@@ -165,15 +153,23 @@ struct CoreFilesystem {
 }
 
 impl CoreFilesystem {
-    fn new(path: &str, subvol_id: u64) -> IOResult<Box<Self>> {
-        let mut device = open_device!(path);
+    fn new(path: &str, subvol_id: u64) -> anyhow::Result<Box<Self>> {
+        let mut device = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(path)?;
         let fs = Filesystem::load(&mut device)?;
-        let sumvol = fs.get_subvolume(&mut device, subvol_id)?;
+        let subvol = fs.get_subvolume(&mut device, subvol_id)?;
+
+        let device = Arc::new(Mutex::new(device));
+        let fs = Arc::new(Mutex::new(fs));
+
+        handle_quit(Arc::clone(&fs), Arc::clone(&device))?;
 
         Ok(Box::new(Self {
-            fs: Arc::new(Mutex::new(fs)),
-            device: Arc::new(Mutex::new(device)),
-            subvol: Arc::new(Mutex::new(sumvol)),
+            fs,
+            device,
+            subvol: Arc::new(Mutex::new(subvol)),
         }))
     }
 }
@@ -190,12 +186,12 @@ impl DavFileSystem for CoreFilesystem {
                     Arc::clone(&self.fs),
                     Arc::clone(&self.subvol),
                     Arc::clone(&self.device),
-                    File::open(fs, subvol, device, &path.to_string())?,
+                    File::open(fs, subvol, device, path.to_string())?,
                     metadata,
                 )) as Box<dyn DavFile>),
                 /* file does not exist, then create it */
                 Err(_) => {
-                    let fd = File::create(fs, subvol, device, &path.to_string())?;
+                    let fd = File::create(fs, subvol, device, path.to_string())?;
 
                     fs.sync_meta_data(device)?;
                     let metadata = CoreMetaData::new(fs, device, &path.to_string())?;
@@ -218,13 +214,11 @@ impl DavFileSystem for CoreFilesystem {
     ) -> FsFuture<FsStream<Box<dyn DavDirEntry>>> {
         async {
             let device = &mut self.device.lock().await as &mut FsFile;
-            let fs = &mut self.fs.lock().await;
+            let fs = &mut self.fs.lock().await as &mut Filesystem;
             let subvol = &mut self.subvol.lock().await;
 
-            let mut fd = Directory::open(fs, subvol, device, &path.to_string())?;
-
             let mut v: Vec<Result<Box<dyn DavDirEntry>, FsError>> = Vec::new();
-            for (name, _) in fd.list_dir(fs, subvol, device)? {
+            for name in fs.list_dir(subvol, device, path.to_string())? {
                 v.push(Ok(Box::new(CoreDirEntry::new(
                     &name,
                     CoreMetaData::new(fs, device, &(path.to_string() + "/" + &name))?,
@@ -258,7 +252,7 @@ impl DavFileSystem for CoreFilesystem {
             let fs = &mut self.fs.lock().await;
             let subvol = &mut self.subvol.lock().await;
 
-            Directory::create(fs, subvol, device, &path.to_string())?;
+            fs.mkdir(subvol, device, path.to_string())?;
             fs.sync_meta_data(device)?;
 
             Ok(())
@@ -271,7 +265,7 @@ impl DavFileSystem for CoreFilesystem {
             let fs = &mut self.fs.lock().await;
             let subvol = &mut self.subvol.lock().await;
 
-            File::remove(fs, subvol, device, &path.to_string())?;
+            fs.remove_file(subvol, device, path.to_string())?;
             fs.sync_meta_data(device)?;
 
             Ok(())
@@ -284,7 +278,7 @@ impl DavFileSystem for CoreFilesystem {
             let fs = &mut self.fs.lock().await;
             let subvol = &mut self.subvol.lock().await;
 
-            Directory::remove(fs, subvol, device, &path.to_string())?;
+            fs.rmdir(subvol, device, path.to_string())?;
             fs.sync_meta_data(device)?;
 
             Ok(())
@@ -415,8 +409,23 @@ async fn dav_handler(req: DavRequest, davhandler: web::Data<DavHandler>) -> DavR
     }
 }
 
-#[actix_web::main]
-async fn main() -> std::io::Result<()> {
+async fn async_quit(fs: Arc<Mutex<Filesystem>>, device: Arc<Mutex<FsFile>>) {
+    let device = &mut device.lock().await as &mut FsFile;
+    fs.lock().await.sync_meta_data(device).unwrap();
+}
+
+fn handle_quit(fs: Arc<Mutex<Filesystem>>, device: Arc<Mutex<FsFile>>) -> anyhow::Result<()> {
+    ctrlc::set_handler(move || {
+        tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(async_quit(Arc::clone(&fs), Arc::clone(&device)))
+    })?;
+
+    Ok(())
+}
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
 
     let addr = format!("{}:{}", args.host, args.port);
@@ -438,5 +447,7 @@ async fn main() -> std::io::Result<()> {
     })
     .bind(addr)?
     .run()
-    .await
+    .await?;
+
+    Ok(())
 }
