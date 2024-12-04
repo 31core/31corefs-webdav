@@ -1,6 +1,7 @@
 use std::fs::File as FsFile;
 use std::io::{Error, ErrorKind, Result as IOResult};
 use std::io::{Read, Seek, SeekFrom, Write};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
@@ -11,7 +12,7 @@ use dav_server::davpath::*;
 use dav_server::fs::*;
 use dav_server::*;
 use futures_util::FutureExt;
-use lib31corefs::{Directory, File, Filesystem, Subvolume};
+use lib31corefs::{block::BLOCK_SIZE, Directory, File, Filesystem, Subvolume};
 use tokio::sync::Mutex;
 
 #[derive(Parser)]
@@ -175,26 +176,30 @@ impl CoreFilesystem {
 }
 
 impl DavFileSystem for CoreFilesystem {
-    fn open<'a>(&'a self, path: &'a DavPath, _options: OpenOptions) -> FsFuture<Box<dyn DavFile>> {
+    fn open<'a>(
+        &'a self,
+        path: &'a DavPath,
+        _options: OpenOptions,
+    ) -> FsFuture<'a, Box<dyn DavFile>> {
         async {
             let device = &mut self.device.lock().await as &mut FsFile;
             let fs = &mut self.fs.lock().await;
             let subvol = &mut self.subvol.lock().await;
 
-            match CoreMetaData::new(fs, device, &path.to_string()) {
+            match CoreMetaData::new(fs, device, path.as_pathbuf()) {
                 Ok(metadata) => Ok(Box::new(CoreFile::new(
                     Arc::clone(&self.fs),
                     Arc::clone(&self.subvol),
                     Arc::clone(&self.device),
-                    File::open(fs, subvol, device, path.to_string())?,
+                    File::open(fs, subvol, device, path.as_pathbuf())?,
                     metadata,
                 )) as Box<dyn DavFile>),
                 /* file does not exist, then create it */
                 Err(_) => {
-                    let fd = File::create(fs, subvol, device, path.to_string())?;
+                    let fd = File::create(fs, subvol, device, path.as_pathbuf())?;
 
                     fs.sync_meta_data(device)?;
-                    let metadata = CoreMetaData::new(fs, device, &path.to_string())?;
+                    let metadata = CoreMetaData::new(fs, device, path.as_pathbuf())?;
                     Ok(Box::new(CoreFile::new(
                         Arc::clone(&self.fs),
                         Arc::clone(&self.subvol),
@@ -211,14 +216,14 @@ impl DavFileSystem for CoreFilesystem {
         &'a self,
         path: &'a DavPath,
         _meta: ReadDirMeta,
-    ) -> FsFuture<FsStream<Box<dyn DavDirEntry>>> {
+    ) -> FsFuture<'a, FsStream<Box<dyn DavDirEntry>>> {
         async {
             let device = &mut self.device.lock().await as &mut FsFile;
             let fs = &mut self.fs.lock().await as &mut Filesystem;
             let subvol = &mut self.subvol.lock().await;
 
             let mut v: Vec<Result<Box<dyn DavDirEntry>, FsError>> = Vec::new();
-            for name in fs.list_dir(subvol, device, path.to_string())? {
+            for name in fs.list_dir(subvol, device, path.as_pathbuf())? {
                 v.push(Ok(Box::new(CoreDirEntry::new(
                     &name,
                     CoreMetaData::new(fs, device, &(path.to_string() + "/" + &name))?,
@@ -230,82 +235,89 @@ impl DavFileSystem for CoreFilesystem {
         }
         .boxed()
     }
-    fn metadata<'a>(&'a self, path: &'a DavPath) -> FsFuture<Box<dyn DavMetaData>> {
+    fn metadata<'a>(&'a self, path: &'a DavPath) -> FsFuture<'a, Box<dyn DavMetaData>> {
         async {
             let device = &mut self.device.lock().await as &mut FsFile;
             let fs = &mut self.fs.lock().await;
 
-            if path.to_string().is_empty() {
-                return Ok(Box::new(CoreMetaData::new(fs, device, "/")?) as Box<dyn DavMetaData>);
-            }
-
-            match CoreMetaData::new(fs, device, &path.to_string()) {
+            match CoreMetaData::new(fs, device, path.as_pathbuf()) {
                 Ok(metadata) => Ok(Box::new(metadata) as Box<dyn DavMetaData>),
                 Err(_) => Err(FsError::NotFound),
             }
         }
         .boxed()
     }
-    fn create_dir<'a>(&'a self, path: &'a DavPath) -> FsFuture<()> {
+    fn create_dir<'a>(&'a self, path: &'a DavPath) -> FsFuture<'a, ()> {
         async {
             let device = &mut self.device.lock().await as &mut FsFile;
             let fs = &mut self.fs.lock().await;
             let subvol = &mut self.subvol.lock().await;
 
-            fs.mkdir(subvol, device, path.to_string())?;
+            fs.mkdir(subvol, device, path.as_pathbuf())?;
             fs.sync_meta_data(device)?;
 
             Ok(())
         }
         .boxed()
     }
-    fn remove_file<'a>(&'a self, path: &'a DavPath) -> FsFuture<()> {
+    fn remove_file<'a>(&'a self, path: &'a DavPath) -> FsFuture<'a, ()> {
         async {
             let device = &mut self.device.lock().await as &mut FsFile;
             let fs = &mut self.fs.lock().await;
             let subvol = &mut self.subvol.lock().await;
 
-            fs.remove_file(subvol, device, path.to_string())?;
+            fs.remove_file(subvol, device, path.as_pathbuf())?;
             fs.sync_meta_data(device)?;
 
             Ok(())
         }
         .boxed()
     }
-    fn remove_dir<'a>(&'a self, path: &'a DavPath) -> FsFuture<()> {
+    fn remove_dir<'a>(&'a self, path: &'a DavPath) -> FsFuture<'a, ()> {
         async {
             let device = &mut self.device.lock().await as &mut FsFile;
             let fs = &mut self.fs.lock().await;
             let subvol = &mut self.subvol.lock().await;
 
-            fs.rmdir(subvol, device, path.to_string())?;
+            fs.rmdir(subvol, device, path.as_pathbuf())?;
             fs.sync_meta_data(device)?;
 
             Ok(())
         }
         .boxed()
     }
-    fn copy<'a>(&'a self, from: &'a DavPath, to: &'a DavPath) -> FsFuture<()> {
+    fn copy<'a>(&'a self, from: &'a DavPath, to: &'a DavPath) -> FsFuture<'a, ()> {
         async {
             let device = &mut self.device.lock().await as &mut FsFile;
             let fs = &mut self.fs.lock().await;
             let subvol = &mut self.subvol.lock().await;
 
-            File::copy(fs, subvol, device, &from.to_string(), &to.to_string())?;
+            File::copy(fs, subvol, device, from.as_pathbuf(), to.as_pathbuf())?;
 
             Ok(())
         }
         .boxed()
     }
-    fn rename<'a>(&'a self, from: &'a DavPath, to: &'a DavPath) -> FsFuture<()> {
+    fn rename<'a>(&'a self, from: &'a DavPath, to: &'a DavPath) -> FsFuture<'a, ()> {
         async {
             let device = &mut self.device.lock().await as &mut FsFile;
             let fs = &mut self.fs.lock().await;
             let subvol = &mut self.subvol.lock().await;
 
-            fs.rename(subvol, device, &from.to_string(), &to.to_string())?;
+            fs.rename(subvol, device, from.as_pathbuf(), to.as_pathbuf())?;
 
             Ok(())
+        }
+        .boxed()
+    }
+    fn get_quota(&self) -> FsFuture<(u64, Option<u64>)> {
+        async {
+            let fs = &mut self.fs.lock().await;
+
+            Ok((
+                fs.sb.real_used_blocks * BLOCK_SIZE as u64,
+                Some(fs.sb.total_blocks * BLOCK_SIZE as u64),
+            ))
         }
         .boxed()
     }
@@ -321,24 +333,45 @@ struct CoreMetaData {
 }
 
 impl CoreMetaData {
-    fn new<D>(fs: &mut Filesystem, device: &mut D, path: &str) -> IOResult<Self>
+    fn new<D, P>(fs: &mut Filesystem, device: &mut D, path: P) -> IOResult<Self>
     where
         D: Read + Write + Seek,
+        P: AsRef<Path>,
     {
         let is_dir;
         let size;
         let modified;
         let accessed;
         let created;
-        if path == "/" || fs.is_dir(&mut fs.get_default_subvolume(device)?, device, path) {
-            let fd = Directory::open(fs, &mut fs.get_default_subvolume(device)?, device, path)?;
+        if path.as_ref() == PathBuf::from("/")
+            || fs.is_dir(
+                &mut fs.get_default_subvolume(device)?,
+                device,
+                path.as_ref(),
+            )
+        {
+            let fd = Directory::open(
+                fs,
+                &mut fs.get_default_subvolume(device)?,
+                device,
+                path.as_ref(),
+            )?;
             is_dir = true;
             size = 0;
             modified = fd.get_inode().mtime;
             accessed = fd.get_inode().atime;
             created = fd.get_inode().ctime;
-        } else if fs.is_file(&mut fs.get_default_subvolume(device)?, device, path) {
-            let fd = File::open(fs, &mut fs.get_default_subvolume(device)?, device, path)?;
+        } else if fs.is_file(
+            &mut fs.get_default_subvolume(device)?,
+            device,
+            path.as_ref(),
+        ) {
+            let fd = File::open(
+                fs,
+                &mut fs.get_default_subvolume(device)?,
+                device,
+                path.as_ref(),
+            )?;
             is_dir = false;
             size = fd.get_inode().size;
             modified = fd.get_inode().mtime;
