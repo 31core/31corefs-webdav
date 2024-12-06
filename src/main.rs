@@ -24,8 +24,8 @@ struct Args {
     #[arg(short, long, default_value_t = 8080)]
     port: u16,
     /** Default subvolume */
-    #[arg(short, long, default_value_t = 0)]
-    subvolume: u64,
+    #[arg(short, long)]
+    subvolume: Option<u64>,
 }
 
 #[derive(Debug)]
@@ -154,24 +154,24 @@ struct CoreFilesystem {
 }
 
 impl CoreFilesystem {
-    fn new(path: &str, subvol_id: u64) -> anyhow::Result<Box<Self>> {
+    fn new(path: &str, subvol_id: Option<u64>) -> anyhow::Result<Box<Self>> {
         let mut device = std::fs::OpenOptions::new()
             .read(true)
             .write(true)
             .open(path)?;
         let fs = Filesystem::load(&mut device)?;
-        let subvol = fs.get_subvolume(&mut device, subvol_id)?;
+        let subvol = match subvol_id {
+            Some(id) => fs.get_subvolume(&mut device, id)?,
+            None => fs.get_default_subvolume(&mut device)?,
+        };
 
         let device = Arc::new(Mutex::new(device));
         let fs = Arc::new(Mutex::new(fs));
+        let subvol = Arc::new(Mutex::new(subvol));
 
-        handle_quit(Arc::clone(&fs), Arc::clone(&device))?;
+        handle_quit(Arc::clone(&fs), Arc::clone(&subvol), Arc::clone(&device))?;
 
-        Ok(Box::new(Self {
-            fs,
-            device,
-            subvol: Arc::new(Mutex::new(subvol)),
-        }))
+        Ok(Box::new(Self { fs, device, subvol }))
     }
 }
 
@@ -186,7 +186,7 @@ impl DavFileSystem for CoreFilesystem {
             let fs = &mut self.fs.lock().await;
             let subvol = &mut self.subvol.lock().await;
 
-            match CoreMetaData::new(fs, device, path.as_pathbuf()) {
+            match CoreMetaData::new(fs, subvol, device, path.as_pathbuf()) {
                 Ok(metadata) => Ok(Box::new(CoreFile::new(
                     Arc::clone(&self.fs),
                     Arc::clone(&self.subvol),
@@ -199,7 +199,8 @@ impl DavFileSystem for CoreFilesystem {
                     let fd = File::create(fs, subvol, device, path.as_pathbuf())?;
 
                     fs.sync_meta_data(device)?;
-                    let metadata = CoreMetaData::new(fs, device, path.as_pathbuf())?;
+                    subvol.sync_meta_data(fs, device)?;
+                    let metadata = CoreMetaData::new(fs, subvol, device, path.as_pathbuf())?;
                     Ok(Box::new(CoreFile::new(
                         Arc::clone(&self.fs),
                         Arc::clone(&self.subvol),
@@ -223,10 +224,10 @@ impl DavFileSystem for CoreFilesystem {
             let subvol = &mut self.subvol.lock().await;
 
             let mut v: Vec<Result<Box<dyn DavDirEntry>, FsError>> = Vec::new();
-            for name in fs.list_dir(subvol, device, path.as_pathbuf())? {
+            for name in fs.list_dir(subvol, device, path.as_pathbuf()).unwrap() {
                 v.push(Ok(Box::new(CoreDirEntry::new(
                     &name,
-                    CoreMetaData::new(fs, device, &(path.to_string() + "/" + &name))?,
+                    CoreMetaData::new(fs, subvol, device, &(path.to_string() + "/" + &name))?,
                 ))));
             }
             let stream = futures_util::stream::iter(v);
@@ -239,8 +240,9 @@ impl DavFileSystem for CoreFilesystem {
         async {
             let device = &mut self.device.lock().await as &mut FsFile;
             let fs = &mut self.fs.lock().await;
+            let subvol = &mut self.subvol.lock().await;
 
-            match CoreMetaData::new(fs, device, path.as_pathbuf()) {
+            match CoreMetaData::new(fs, subvol, device, path.as_pathbuf()) {
                 Ok(metadata) => Ok(Box::new(metadata) as Box<dyn DavMetaData>),
                 Err(_) => Err(FsError::NotFound),
             }
@@ -255,6 +257,7 @@ impl DavFileSystem for CoreFilesystem {
 
             fs.mkdir(subvol, device, path.as_pathbuf())?;
             fs.sync_meta_data(device)?;
+            subvol.sync_meta_data(fs, device)?;
 
             Ok(())
         }
@@ -268,6 +271,7 @@ impl DavFileSystem for CoreFilesystem {
 
             fs.remove_file(subvol, device, path.as_pathbuf())?;
             fs.sync_meta_data(device)?;
+            subvol.sync_meta_data(fs, device)?;
 
             Ok(())
         }
@@ -281,6 +285,7 @@ impl DavFileSystem for CoreFilesystem {
 
             fs.rmdir(subvol, device, path.as_pathbuf())?;
             fs.sync_meta_data(device)?;
+            subvol.sync_meta_data(fs, device)?;
 
             Ok(())
         }
@@ -333,7 +338,12 @@ struct CoreMetaData {
 }
 
 impl CoreMetaData {
-    fn new<D, P>(fs: &mut Filesystem, device: &mut D, path: P) -> IOResult<Self>
+    fn new<D, P>(
+        fs: &mut Filesystem,
+        subvol: &mut Subvolume,
+        device: &mut D,
+        path: P,
+    ) -> IOResult<Self>
     where
         D: Read + Write + Seek,
         P: AsRef<Path>,
@@ -343,35 +353,15 @@ impl CoreMetaData {
         let modified;
         let accessed;
         let created;
-        if path.as_ref() == PathBuf::from("/")
-            || fs.is_dir(
-                &mut fs.get_default_subvolume(device)?,
-                device,
-                path.as_ref(),
-            )
-        {
-            let fd = Directory::open(
-                fs,
-                &mut fs.get_default_subvolume(device)?,
-                device,
-                path.as_ref(),
-            )?;
+        if path.as_ref() == PathBuf::from("/") || fs.is_dir(subvol, device, path.as_ref()) {
+            let fd = Directory::open(fs, subvol, device, path.as_ref())?;
             is_dir = true;
             size = 0;
             modified = fd.get_inode().mtime;
             accessed = fd.get_inode().atime;
             created = fd.get_inode().ctime;
-        } else if fs.is_file(
-            &mut fs.get_default_subvolume(device)?,
-            device,
-            path.as_ref(),
-        ) {
-            let fd = File::open(
-                fs,
-                &mut fs.get_default_subvolume(device)?,
-                device,
-                path.as_ref(),
-            )?;
+        } else if fs.is_file(subvol, device, path.as_ref()) {
+            let fd = File::open(fs, subvol, device, path.as_ref())?;
             is_dir = false;
             size = fd.get_inode().size;
             modified = fd.get_inode().mtime;
@@ -442,16 +432,28 @@ async fn dav_handler(req: DavRequest, davhandler: web::Data<DavHandler>) -> DavR
     }
 }
 
-async fn async_quit(fs: Arc<Mutex<Filesystem>>, device: Arc<Mutex<FsFile>>) {
+async fn async_quit(
+    fs: Arc<Mutex<Filesystem>>,
+    subvol: Arc<Mutex<Subvolume>>,
+    device: Arc<Mutex<FsFile>>,
+) {
     let device = &mut device.lock().await as &mut FsFile;
-    fs.lock().await.sync_meta_data(device).unwrap();
+    let fs = &mut fs.lock().await;
+    fs.sync_meta_data(device).unwrap();
+    subvol.lock().await.sync_meta_data(fs, device).unwrap();
 }
 
-fn handle_quit(fs: Arc<Mutex<Filesystem>>, device: Arc<Mutex<FsFile>>) -> anyhow::Result<()> {
+fn handle_quit(
+    fs: Arc<Mutex<Filesystem>>,
+    subvol: Arc<Mutex<Subvolume>>,
+    device: Arc<Mutex<FsFile>>,
+) -> anyhow::Result<()> {
     ctrlc::set_handler(move || {
-        tokio::runtime::Runtime::new()
-            .unwrap()
-            .block_on(async_quit(Arc::clone(&fs), Arc::clone(&device)))
+        tokio::runtime::Runtime::new().unwrap().block_on(async_quit(
+            Arc::clone(&fs),
+            Arc::clone(&subvol),
+            Arc::clone(&device),
+        ))
     })?;
 
     Ok(())
