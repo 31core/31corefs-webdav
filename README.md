@@ -1,6 +1,6 @@
 # 31corefs-webdav
 
-31coreFS webdav client for Windows, macOS and Linux.
+31coreFS WebDAV client for Windows, macOS and Linux.
 
 ## Usage
 

@@ -1,26 +1,34 @@
-use std::fs::File as FsFile;
-use std::io::{Error, ErrorKind, Result as IOResult};
-use std::io::{Read, Seek, SeekFrom, Write};
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::time::{Duration, SystemTime};
-
 use actix_web::{web, App, HttpServer};
 use clap::Parser;
-use dav_server::actix::*;
-use dav_server::davpath::*;
-use dav_server::fs::*;
-use dav_server::*;
+use dav_server::{
+    actix::{DavRequest, DavResponse},
+    davpath::DavPath,
+    fs::{
+        DavDirEntry, DavFile, DavFileSystem, DavMetaData, FsError, FsFuture, FsResult, FsStream,
+        OpenOptions, ReadDirMeta,
+    },
+    DavConfig, DavHandler,
+};
 use futures_util::FutureExt;
 use lib31corefs::{block::BLOCK_SIZE, Directory, File, Filesystem, Subvolume};
+use std::{
+    fs::File as FsFile,
+    io::{Error, ErrorKind, Result as IOResult},
+    io::{Read, Seek, SeekFrom, Write},
+    path::{Path, PathBuf},
+    sync::Arc,
+    time::{Duration, SystemTime},
+};
 use tokio::sync::Mutex;
 
 #[derive(Parser)]
-#[command(about = "31coreFS webdav interface", version)]
+#[command(about = "31coreFS WebDAV interface", version)]
 struct Args {
     device: String,
+    /** Listen address */
     #[arg(long, default_value = "localhost")]
     host: String,
+    /** Listen port */
     #[arg(short, long, default_value_t = 8080)]
     port: u16,
     /** Default subvolume */
@@ -224,7 +232,7 @@ impl DavFileSystem for CoreFilesystem {
             let subvol = &mut self.subvol.lock().await;
 
             let mut v: Vec<Result<Box<dyn DavDirEntry>, FsError>> = Vec::new();
-            for name in fs.list_dir(subvol, device, path.as_pathbuf()).unwrap() {
+            for name in fs.list_dir(subvol, device, path.as_pathbuf())? {
                 v.push(Ok(Box::new(CoreDirEntry::new(
                     &name,
                     CoreMetaData::new(fs, subvol, device, &(path.to_string() + "/" + &name))?,
