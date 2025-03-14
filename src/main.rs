@@ -1,16 +1,16 @@
-use actix_web::{web, App, HttpServer};
+use actix_web::{App, HttpServer, web};
 use clap::Parser;
 use dav_server::{
+    DavConfig, DavHandler,
     actix::{DavRequest, DavResponse},
     davpath::DavPath,
     fs::{
         DavDirEntry, DavFile, DavFileSystem, DavMetaData, FsError, FsFuture, FsResult, FsStream,
         OpenOptions, ReadDirMeta,
     },
-    DavConfig, DavHandler,
 };
 use futures_util::FutureExt;
-use lib31corefs::{block::BLOCK_SIZE, Directory, File, Filesystem, Subvolume};
+use lib31corefs::{Directory, File, Filesystem, Subvolume, block::BLOCK_SIZE};
 use std::{
     fs::File as FsFile,
     io::{Error, ErrorKind, Result as IOResult},
@@ -397,13 +397,13 @@ impl DavMetaData for CoreMetaData {
         self.is_dir
     }
     fn modified(&self) -> FsResult<SystemTime> {
-        Ok(SystemTime::UNIX_EPOCH + Duration::from_secs(self.modified))
+        Ok(SystemTime::UNIX_EPOCH + Duration::from_nanos(self.modified))
     }
     fn accessed(&self) -> FsResult<SystemTime> {
-        Ok(SystemTime::UNIX_EPOCH + Duration::from_secs(self.accessed))
+        Ok(SystemTime::UNIX_EPOCH + Duration::from_nanos(self.accessed))
     }
     fn created(&self) -> FsResult<SystemTime> {
-        Ok(SystemTime::UNIX_EPOCH + Duration::from_secs(self.created))
+        Ok(SystemTime::UNIX_EPOCH + Duration::from_nanos(self.created))
     }
 }
 

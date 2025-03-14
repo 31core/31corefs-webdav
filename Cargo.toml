@@ -1,19 +1,19 @@
 [package]
 name = "webdav"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 
 [[bin]]
 name = "31corefs-webdav"
 path = "src/main.rs"
 
 [dependencies]
-actix-web = "4.9.0"
-anyhow = "1.0.95"
-bytes = "1.9.0"
-clap = { version = "4.5.23", features = ["derive"] }
+actix-web = "4.10.2"
+anyhow = "1.0.96"
+bytes = "1.10.0"
+clap = { version = "4.5.32", features = ["derive"] }
 ctrlc = "3.4.5"
 dav-server = { version = "0.7.0", features = ["actix-compat"] }
 futures-util = "0.3.31"
 lib31corefs = { git = "https://github.com/31core/31corefs.git" }
-tokio = { version = "1.42.0", features = ["full"] }
+tokio = { version = "1.44.1", features = ["full"] }
