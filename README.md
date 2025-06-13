@@ -1,6 +1,6 @@
 # 31corefs-webdav
 
-31coreFS WebDAV client for Windows, macOS and Linux.
+31coreFS WebDAV interface for Windows, macOS and Linux.
 
 ## Usage
 
@@ -9,7 +9,7 @@
 31corefs-webdev <path to device>
 ```
 
-- Connect to `dav://localhost:8080` using **Any** WebDAV client.
+- Connect to `dav://localhost:8080` (or `http://localhost:8080` on macOS and Windows) using **Any** WebDAV client.
 
 ## Acknowledgement
 

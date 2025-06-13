@@ -16,6 +16,7 @@ use std::{
     io::{Error, ErrorKind, Result as IOResult},
     io::{Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
+    str::FromStr,
     sync::Arc,
     time::{Duration, SystemTime},
 };
@@ -471,7 +472,11 @@ fn handle_quit(
 async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
 
-    let addr = format!("{}:{}", args.host, args.port);
+    let addr = if std::net::Ipv6Addr::from_str(&args.host).is_ok() {
+        format!("[{}]:{}", args.host, args.port)
+    } else {
+        format!("{}:{}", args.host, args.port)
+    };
 
     let dav_server = DavHandler::builder()
         .filesystem(CoreFilesystem::new(&args.device, args.subvolume)?)
