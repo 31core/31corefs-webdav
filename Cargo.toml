@@ -14,6 +14,6 @@ bytes = "1.11"
 clap = { version = "4.5", features = ["derive"] }
 ctrlc = "3.5.1"
 dav-server = { version = "0.8.0", features = ["actix-compat"] }
+fs31core = { git = "https://github.com/31core/31corefs.git" }
 futures-util = "0.3.31"
-lib31corefs = { git = "https://github.com/31core/31corefs.git" }
 tokio = { version = "1.48", features = ["full"] }

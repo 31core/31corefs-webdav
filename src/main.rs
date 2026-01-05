@@ -9,8 +9,8 @@ use dav_server::{
         OpenOptions, ReadDirMeta,
     },
 };
+use fs31core::{Directory, File, Filesystem, Subvolume, block::BLOCK_SIZE};
 use futures_util::FutureExt;
-use lib31corefs::{Directory, File, Filesystem, Subvolume, block::BLOCK_SIZE};
 use std::{
     fs::File as FsFile,
     io::{Error, ErrorKind, Result as IOResult},
