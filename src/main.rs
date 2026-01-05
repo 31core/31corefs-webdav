@@ -15,7 +15,7 @@ use std::{
     fs::File as FsFile,
     io::{Error, ErrorKind, Result as IOResult},
     io::{Read, Seek, SeekFrom, Write},
-    path::{Path, PathBuf},
+    path::Path,
     str::FromStr,
     sync::Arc,
     time::{Duration, SystemTime},
@@ -89,7 +89,7 @@ impl DavFile for CoreFile {
         .boxed()
     }
 
-    fn write_bytes(&mut self, buf: bytes::Bytes) -> FsFuture<()> {
+    fn write_bytes(&mut self, buf: bytes::Bytes) -> FsFuture<'_, ()> {
         async move {
             let device = &mut self.device.lock().await as &mut FsFile;
             let fs = &mut self.fs.lock().await;
@@ -106,7 +106,7 @@ impl DavFile for CoreFile {
         .boxed()
     }
 
-    fn read_bytes(&mut self, count: usize) -> FsFuture<bytes::Bytes> {
+    fn read_bytes(&mut self, count: usize) -> FsFuture<'_, bytes::Bytes> {
         async move {
             let device = &mut self.device.lock().await as &mut FsFile;
             let fs = &mut self.fs.lock().await;
@@ -123,7 +123,7 @@ impl DavFile for CoreFile {
         .boxed()
     }
 
-    fn seek(&mut self, pos: SeekFrom) -> FsFuture<u64> {
+    fn seek(&mut self, pos: SeekFrom) -> FsFuture<'_, u64> {
         async move {
             match pos {
                 SeekFrom::Start(offset) => self.offset = offset,
@@ -146,7 +146,7 @@ impl DavFile for CoreFile {
         }
         .boxed()
     }
-    fn flush(&mut self) -> FsFuture<()> {
+    fn flush(&mut self) -> FsFuture<'_, ()> {
         async {
             self.offset = 0;
             Ok(())
@@ -324,7 +324,7 @@ impl DavFileSystem for CoreFilesystem {
         }
         .boxed()
     }
-    fn get_quota(&self) -> FsFuture<(u64, Option<u64>)> {
+    fn get_quota(&self) -> FsFuture<'_, (u64, Option<u64>)> {
         async {
             let fs = &mut self.fs.lock().await;
 
@@ -362,7 +362,7 @@ impl CoreMetaData {
         let modified;
         let accessed;
         let created;
-        if path.as_ref() == PathBuf::from("/") || fs.is_dir(subvol, device, path.as_ref()) {
+        if path.as_ref() == "/" || fs.is_dir(subvol, device, path.as_ref()) {
             let fd = Directory::open(fs, subvol, device, path.as_ref())?;
             is_dir = true;
             size = 0;
@@ -427,7 +427,7 @@ impl DavDirEntry for CoreDirEntry {
     fn name(&self) -> Vec<u8> {
         self.name.as_bytes().to_owned()
     }
-    fn metadata(&self) -> FsFuture<Box<dyn DavMetaData>> {
+    fn metadata(&self) -> FsFuture<'_, Box<dyn DavMetaData>> {
         async { Ok(Box::new(self.metadata.clone()) as Box<dyn DavMetaData>) }.boxed()
     }
 }
