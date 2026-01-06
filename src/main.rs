@@ -68,7 +68,8 @@ impl CoreFile {
 
 impl DavFile for CoreFile {
     fn metadata(&'_ mut self) -> FsFuture<'_, Box<dyn DavMetaData>> {
-        async move { Ok(Box::new(self.metadata.clone()) as Box<dyn DavMetaData>) }.boxed()
+        let metadata: Box<dyn DavMetaData> = Box::new(self.metadata.clone());
+        async move { Ok(metadata) }.boxed()
     }
     fn write_buf(&'_ mut self, mut buf: Box<dyn bytes::Buf + Send>) -> FsFuture<'_, ()> {
         async move {
@@ -124,34 +125,28 @@ impl DavFile for CoreFile {
     }
 
     fn seek(&mut self, pos: SeekFrom) -> FsFuture<'_, u64> {
-        async move {
-            match pos {
-                SeekFrom::Start(offset) => self.offset = offset,
-                SeekFrom::Current(offset) => {
-                    if offset > 0 {
-                        self.offset += offset as u64;
-                    } else {
-                        self.offset -= -offset as u64;
-                    }
-                }
-                SeekFrom::End(offset) => {
-                    if offset > 0 {
-                        self.offset = self.metadata.size + offset as u64;
-                    } else {
-                        self.offset = self.metadata.size - -offset as u64;
-                    }
+        match pos {
+            SeekFrom::Start(offset) => self.offset = offset,
+            SeekFrom::Current(offset) => {
+                if offset > 0 {
+                    self.offset += offset as u64;
+                } else {
+                    self.offset -= -offset as u64;
                 }
             }
-            Ok(self.offset)
+            SeekFrom::End(offset) => {
+                if offset > 0 {
+                    self.offset = self.metadata.size + offset as u64;
+                } else {
+                    self.offset = self.metadata.size - -offset as u64;
+                }
+            }
         }
-        .boxed()
+        async move { Ok(self.offset) }.boxed()
     }
     fn flush(&mut self) -> FsFuture<'_, ()> {
-        async {
-            self.offset = 0;
-            Ok(())
-        }
-        .boxed()
+        self.offset = 0;
+        async { Ok(()) }.boxed()
     }
 }
 
@@ -163,7 +158,10 @@ struct CoreFilesystem {
 }
 
 impl CoreFilesystem {
-    fn new(path: &str, subvol_id: Option<u64>) -> anyhow::Result<Box<Self>> {
+    fn new<P>(path: P, subvol_id: Option<u64>) -> anyhow::Result<Box<Self>>
+    where
+        P: AsRef<Path>,
+    {
         let mut device = std::fs::OpenOptions::new()
             .read(true)
             .write(true)
@@ -182,41 +180,85 @@ impl CoreFilesystem {
 
         Ok(Box::new(Self { fs, device, subvol }))
     }
+    async fn create_file<D>(
+        &self,
+        fs: &mut Filesystem,
+        subvol: &mut Subvolume,
+        device: &mut D,
+        path: &DavPath,
+    ) -> FsResult<CoreFile>
+    where
+        D: Read + Write + Seek,
+    {
+        let fd = File::create(fs, subvol, device, path.as_pathbuf())?;
+
+        fs.sync_meta_data(device)?;
+        subvol.sync_meta_data(fs, device)?;
+
+        let metadata = CoreMetaData::new(fs, subvol, device, path.as_pathbuf())?;
+        Ok(CoreFile::new(
+            Arc::clone(&self.fs),
+            Arc::clone(&self.subvol),
+            Arc::clone(&self.device),
+            fd,
+            metadata,
+        ))
+    }
 }
 
 impl DavFileSystem for CoreFilesystem {
     fn open<'a>(
         &'a self,
         path: &'a DavPath,
-        _options: OpenOptions,
+        options: OpenOptions,
     ) -> FsFuture<'a, Box<dyn DavFile>> {
-        async {
-            let device = &mut self.device.lock().await as &mut FsFile;
-            let fs = &mut self.fs.lock().await;
-            let subvol = &mut self.subvol.lock().await;
+        async move {
+            let mut device = self.device.lock().await;
+            let mut fs = self.fs.lock().await;
+            let mut subvol = self.subvol.lock().await;
 
-            match CoreMetaData::new(fs, subvol, device, path.as_pathbuf()) {
+            if options.create_new {
+                let file: Box<dyn DavFile> = Box::new(
+                    self.create_file(&mut fs, &mut subvol, &mut device as &mut FsFile, path)
+                        .await?,
+                );
+                return Ok(file);
+            }
+
+            match CoreMetaData::new(
+                &mut fs,
+                &mut subvol,
+                &mut device as &mut FsFile,
+                path.as_pathbuf(),
+            ) {
                 Ok(metadata) => Ok(Box::new(CoreFile::new(
                     Arc::clone(&self.fs),
                     Arc::clone(&self.subvol),
                     Arc::clone(&self.device),
-                    File::open(fs, subvol, device, path.as_pathbuf())?,
+                    File::open(
+                        &mut fs,
+                        &mut subvol,
+                        &mut device as &mut FsFile,
+                        path.as_pathbuf(),
+                    )?,
                     metadata,
                 )) as Box<dyn DavFile>),
-                /* file does not exist, then create it */
                 Err(_) => {
-                    let fd = File::create(fs, subvol, device, path.as_pathbuf())?;
-
-                    fs.sync_meta_data(device)?;
-                    subvol.sync_meta_data(fs, device)?;
-                    let metadata = CoreMetaData::new(fs, subvol, device, path.as_pathbuf())?;
-                    Ok(Box::new(CoreFile::new(
-                        Arc::clone(&self.fs),
-                        Arc::clone(&self.subvol),
-                        Arc::clone(&self.device),
-                        fd,
-                        metadata,
-                    )) as Box<dyn DavFile>)
+                    /* file does not exist, then create it */
+                    if options.create {
+                        let file: Box<dyn DavFile> = Box::new(
+                            self.create_file(
+                                &mut fs,
+                                &mut subvol,
+                                &mut device as &mut FsFile,
+                                path,
+                            )
+                            .await?,
+                        );
+                        Ok(file)
+                    } else {
+                        Err(FsError::NotFound)
+                    }
                 }
             }
         }
@@ -252,7 +294,10 @@ impl DavFileSystem for CoreFilesystem {
             let subvol = &mut self.subvol.lock().await;
 
             match CoreMetaData::new(fs, subvol, device, path.as_pathbuf()) {
-                Ok(metadata) => Ok(Box::new(metadata) as Box<dyn DavMetaData>),
+                Ok(metadata) => {
+                    let metadata: Box<dyn DavMetaData> = Box::new(metadata);
+                    Ok(metadata)
+                }
                 Err(_) => Err(FsError::NotFound),
             }
         }
@@ -415,9 +460,12 @@ struct CoreDirEntry {
 }
 
 impl CoreDirEntry {
-    fn new(name: &str, metadata: CoreMetaData) -> Self {
+    fn new<S>(name: S, metadata: CoreMetaData) -> Self
+    where
+        S: Into<String>,
+    {
         Self {
-            name: name.to_owned(),
+            name: name.into(),
             metadata,
         }
     }
@@ -428,7 +476,8 @@ impl DavDirEntry for CoreDirEntry {
         self.name.as_bytes().to_owned()
     }
     fn metadata(&self) -> FsFuture<'_, Box<dyn DavMetaData>> {
-        async { Ok(Box::new(self.metadata.clone()) as Box<dyn DavMetaData>) }.boxed()
+        let metadata: Box<dyn DavMetaData> = Box::new(self.metadata.clone());
+        async { Ok(metadata) }.boxed()
     }
 }
 
@@ -472,6 +521,8 @@ fn handle_quit(
 async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
 
+    tracing_subscriber::fmt::init();
+
     let addr = if std::net::Ipv6Addr::from_str(&args.host).is_ok() {
         format!("[{}]:{}", args.host, args.port)
     } else {
@@ -483,10 +534,7 @@ async fn main() -> anyhow::Result<()> {
         .locksystem(dav_server::memls::MemLs::new())
         .build_handler();
 
-    println!(
-        "31corefs-webdav: listening on {} serving {}",
-        addr, args.device
-    );
+    tracing::info!("listening on {} serving {}", addr, args.device);
 
     HttpServer::new(move || {
         App::new()

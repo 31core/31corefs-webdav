@@ -7,6 +7,9 @@ edition = "2024"
 name = "31corefs-webdav"
 path = "src/main.rs"
 
+[profile.release]
+lto = true
+
 [dependencies]
 actix-web = "4.12"
 anyhow = "1.0"
@@ -17,3 +20,5 @@ dav-server = { version = "0.8.0", features = ["actix-compat"] }
 fs31core = { git = "https://github.com/31core/31corefs.git" }
 futures-util = "0.3.31"
 tokio = { version = "1.48", features = ["full"] }
+tracing = "0.1"
+tracing-subscriber = "0.3"
